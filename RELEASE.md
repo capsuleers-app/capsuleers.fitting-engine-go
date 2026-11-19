@@ -4,8 +4,8 @@
 
 Module tag `vX.Y.Z` = npm `eve-fit-engine@X.Y.Z`. Same SDE data (`data/` is byte-identical to the
 `data/` of that npm tarball), same engine behaviour (every parity fix is in both repos, see
-[CONTRIBUTING.md](CONTRIBUTING.md)). There is no Go-only version: a fix that only this repo needs waits
-for, or asks for, the next `eve-fit-engine` release. Versions stay `v0.x`: a `v2+` would need the `/v2`
+[CONTRIBUTING.md](CONTRIBUTING.md)). A release may go *ahead* of the TS twin (a Go merge before the TS one: Path 0); the twin then reaches that
+version on its own merge. Versions stay `v0.x`: a `v2+` would need the `/v2`
 suffix in the module path.
 
 `VERSION` holds the current `X.Y.Z`; `go run ./tools/syncdata -check` (CI job `data`) fails if `data/`
@@ -25,6 +25,25 @@ Rebuilding here would mean a second bundle generator to keep at parity, and coul
 again with `GOAMD64=v3`), Pyfa fixture parity exactly `662 passed, 0 failed`, effect coverage "truly
 silent 0", and `tools/syncdata -check`. Both release paths run it; red = no tag.
 
+## Path 0: every merge to `main` (automatic, `release.yml`)
+
+A push to `main` runs `release.yml`: gate, then tag. The version comes from `scripts/next-version.sh`:
+
+- the latest `eve-fit-engine` on npm is higher than our highest tag → we **reach it** and `data/` is synced
+  from that tarball (the TS twin released first);
+- otherwise → highest tag + patch (we are **ahead** of the twin); `data/` stays the latest npm one, and
+  `tools/syncdata` follows the highest published version ≤ `VERSION` until the twin catches up.
+
+So the two PRs of a twin fix, merged one after the other in either order, release the same version in both
+repos (the TS side reads our highest tag with `git ls-remote`). The release commit is
+`chore(release): vX.Y.Z (...) [auto]`.
+
+Nothing is released for: a tip commit with `[auto]` or already tagged (loop guard; it includes everything
+before it), or a push that only touches `**.md`, `docs/**`, `.github/**`, `test/**`, `tools/**`,
+`scripts/**`, `oracle/**`, `PYFA_REF`, `LICENSE`, `NOTICE`, `.gitignore`. Pull requests never tag: a
+`preview` job prints the version a merge would release. Gate red = no tag; an existing tag is never
+overwritten. The workflow shares `concurrency: release` with `sde-sync`.
+
 ## Path 1: SDE releases (automatic, `sde-sync.yml`)
 
 Daily at 06:30 UTC, after `eve-fit-engine`'s own `sde-refresh` (05:00):
@@ -37,12 +56,12 @@ Daily at 06:30 UTC, after `eve-fit-engine`'s own `sde-refresh` (05:00):
 3. Newer, but `data/` unchanged → it was a code release of `eve-fit-engine`. Its fixes must already be
    mirrored here, but a robot can't prove it: the job opens an `sde-sync` issue and a human uses path 2.
 
-## Path 2: manual releases (`release.yml`)
+## Path 2: manual releases (`release.yml`, dispatch)
 
-Actions → **release** → Run workflow, `version` = the `eve-fit-engine` version (empty = latest on npm).
-It syncs `data/`, writes `VERSION`, runs the gate, commits, tags `vX.Y.Z`, pushes and warms the proxy. It
-refuses an existing tag. Use it for `eve-fit-engine` code releases once the fixes are mirrored, and to
-release after fixing a red `sde-sync`.
+Actions → **release** → Run workflow, `version` = an exact `X.Y.Z` that exists on npm (empty = the Path 0
+rule, even when the tip is `[auto]`). It syncs `data/` from that tarball, writes `VERSION`, runs the gate,
+commits, tags `vX.Y.Z`, pushes and warms the proxy. It refuses an existing tag. Use it after fixing a red
+`sde-sync`, or for a `eve-fit-engine` code release you want to tag by hand.
 
 Locally, the same steps by hand (tag and push are for a maintainer):
 
@@ -62,3 +81,4 @@ GOPROXY=https://proxy.golang.org go list -m github.com/capsuleers-app/capsuleers
   `EVEWORKBENCH_API_KEY` (secret) for the real-fit corpus of `diff-parity`.
 - Labels used by the workflows: `sde-sync`, `diff-parity`, `pyfa-drift`.
 - No npm token: nothing here publishes to npm.
+- `release.yml` pushes to `main` and tags: the App needs the ruleset bypass (see above).

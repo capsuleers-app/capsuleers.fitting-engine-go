@@ -32,7 +32,9 @@ PRs opened together, cross-linked, and merged together:
 3. Both gates green: here `bash scripts/gate.sh` + `go run ./tools/diff -source=all`; there
    `npm run test:pyfa`, `npm run audit:coverage`, `npm run diff -- --source=all`.
 4. Each PR body links the other and states both results (e.g. `parity 662/0, diff 0 unexpected`).
-5. Merge both. The next `eve-fit-engine` release then carries the fix in both artifacts (RELEASE.md).
+5. Merge both. Each merge releases by itself (`release.yml`): the version is the npm `eve-fit-engine` one if it
+   is higher than our tag, else our tag + patch, so the two merges end on the same version in either order
+   (RELEASE.md). Docs/CI/test/tools-only merges release nothing.
 
 There is no automatic TS↔Go comparison any more: the only thing that keeps the twins equal is this
 procedure plus both being equal to Pyfa. So:
@@ -174,7 +176,7 @@ go run ./tools/diff -source=all           # must exit 0
 | `pyfa-drift.yml` | Mondays 06:30 UTC + manual | pyfa effects.py drift → issue |
 | `pyfa-pin-bump.yml` | Sundays 14:00 UTC + manual | follow eve-fit-engine's pin: regenerate, gate, recalibrate → commit or PR |
 | `sde-sync.yml` | daily 06:30 UTC + manual | follow eve-fit-engine releases: sync data/, gate, tag (or issue) |
-| `release.yml` | manual | release at an eve-fit-engine version: sync, gate, tag |
+| `release.yml` | push to main (code paths) + manual | twin-aligned version, sync data/ if reaching npm, gate, tag; PR = version preview only |
 
 ## 11. Licence
 

@@ -32,7 +32,9 @@ Comandi pesanti: `systemd-run --user --scope -p MemoryMax=6G …` e `go test -p 
 - Pin pyfa = quello di eve-fit-engine; si sposta solo con la procedura completa (docs/claude/parity.md).
 - Engine: mai `range` su map Go (usa `internal/omap`), sempre `float64(a*b) + c` (lint bloccante).
 - Nessuna dipendenza fuori dalla standard library.
-- Niente versioni solo-Go: tag `vX.Y.Z` = eve-fit-engine X.Y.Z. Tag e push li fanno CI o una persona.
+- Tag `vX.Y.Z` = eve-fit-engine X.Y.Z, ma il rilascio è AUTOMATICO a ogni push su `main` (release.yml): versione =
+  npm più recente se > del mio tag, altrimenti tag+patch (`scripts/next-version.sh`); `[auto]`/docs/CI/test/tools
+  non rilasciano. Tag e push li fa la CI: un agente non li fa.
 - `tools/workbench` a concorrenza 2; `.workbench/` è cache gitignorata di fit altrui, non ridistribuirla.
 - Comandi, flussi di validazione/rilascio o invarianti cambiati → aggiorna CONTRIBUTING.md e questo file.
 - Emblema in `docs/brand/`: non ritoccarlo qui.
