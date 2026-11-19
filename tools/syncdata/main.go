@@ -6,6 +6,8 @@
 // build a past version shipped, and a second bundle generator would be one more thing to keep at parity.
 //
 //	go run ./tools/syncdata                  # data/ := data/ of eve-fit-engine@$(cat VERSION)
+//	                                         # (VERSION not on npm yet = this module is ahead of the TS
+//	                                         # twin: the highest published version <= VERSION is used)
 //	go run ./tools/syncdata -version 0.2.27  # another version (then write it into VERSION)
 //	go run ./tools/syncdata -check           # drift check: exit 1 if data/ differs from the tarball
 //	go run ./tools/syncdata -latest          # print the latest published version and exit
@@ -32,6 +34,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -66,7 +69,14 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
-		*version = strings.TrimSpace(string(raw))
+		want := strings.TrimSpace(string(raw))
+		*version, err = publishedAtMost(want)
+		if err != nil {
+			fail(err)
+		}
+		if *version != want {
+			fmt.Printf("[syncdata] %s@%s is not published yet (module ahead of the TS twin): data/ follows %s@%s\n", pkg, want, pkg, *version)
+		}
 	}
 	files, err := tarballData(*version)
 	if err != nil {
@@ -135,16 +145,98 @@ func chdirRoot() error {
 	return os.Chdir(filepath.Dir(gomod))
 }
 
+var errNotFound = errors.New("not found")
+
 func getJSON(url string, v any) error {
 	res, err := client.Get(url)
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("GET %s: HTTP 404: %w", url, errNotFound)
+	}
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: HTTP %d", url, res.StatusCode)
 	}
 	return json.NewDecoder(res.Body).Decode(v)
+}
+
+// publishedAtMost returns v when eve-fit-engine@v is on npm, otherwise the highest published X.Y.Z below
+// it. The module may be released ahead of the TS twin (versions then re-align when the twin catches up);
+// its data/ is the latest published one in the meantime.
+func publishedAtMost(v string) (string, error) {
+	var one struct {
+		Version string `json:"version"`
+	}
+	err := getJSON(registry+pkg+"/"+v, &one)
+	if err == nil {
+		return v, nil
+	}
+	if !errors.Is(err, errNotFound) {
+		return "", err
+	}
+	var all struct {
+		Versions map[string]json.RawMessage `json:"versions"`
+	}
+	if err := getJSON(registry+pkg, &all); err != nil {
+		return "", err
+	}
+	names := make([]string, 0, len(all.Versions))
+	for k := range all.Versions {
+		names = append(names, k)
+	}
+	best, ok := highestAtMost(names, v)
+	if !ok {
+		return "", fmt.Errorf("registry: no published %s version <= %s", pkg, v)
+	}
+	return best, nil
+}
+
+// parseVersion reads a plain X.Y.Z (prereleases and anything else are rejected).
+func parseVersion(v string) ([3]int, bool) {
+	var out [3]int
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || strconv.Itoa(n) != p {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+func versionLess(a, b [3]int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
+}
+
+// highestAtMost picks the highest plain X.Y.Z in names that is <= limit.
+func highestAtMost(names []string, limit string) (string, bool) {
+	lim, ok := parseVersion(limit)
+	if !ok {
+		return "", false
+	}
+	best, found := "", false
+	var bestV [3]int
+	for _, n := range names {
+		pv, ok := parseVersion(n)
+		if !ok || versionLess(lim, pv) {
+			continue
+		}
+		if !found || versionLess(bestV, pv) {
+			best, bestV, found = n, pv, true
+		}
+	}
+	return best, found
 }
 
 func latestVersion() (string, error) {

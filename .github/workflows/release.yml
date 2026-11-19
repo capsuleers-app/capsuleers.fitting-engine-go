@@ -1,30 +1,82 @@
 name: release
 
-# Manual release of the module at an eve-fit-engine version (versions are aligned: tag vX.Y.Z = npm
-# eve-fit-engine X.Y.Z, same data/). Use it for eve-fit-engine CODE releases (data unchanged, so
-# sde-sync.yml only opens an issue) once their fixes are mirrored here, or to re-run a blocked sync.
+# Automatic release: every push to main (= every merged PR) tags a new module version. Manual
+# workflow_dispatch stays (empty version = the automatic rule; an explicit X.Y.Z releases exactly that).
 #
-# It syncs data/ from the npm tarball of that version, writes VERSION, runs the release gate, commits,
-# tags vX.Y.Z, pushes and warms the module proxy. There is no Go-only version: a Go-only fix waits for
-# (or asks for) the next eve-fit-engine release.
+# Version rule (scripts/next-version.sh): the latest eve-fit-engine on npm > my highest tag -> reach it and
+# sync data/ from that tarball; otherwise (this module is ahead of the TS twin) my highest tag + patch,
+# with data/ of the latest npm version. Twin PRs merged in sequence, in either order, end on the same
+# version in both repos. tools/syncdata follows the highest published version <= VERSION while ahead.
+#
+# No loops, no double releases:
+#   - push paths-ignore: docs, CI, tests, tools, scripts, oracle, PYFA_REF (nothing consumers import);
+#   - a push whose tip commit is an `[auto]` commit (this workflow, sde-sync, pyfa-pin-bump) or already
+#     carries a v* tag releases nothing: that tip already includes everything before it;
+#   - `concurrency: release` is shared with sde-sync, so the two never overlap.
+# Gate red = no tag. An existing tag is never overwritten.
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - 'test/**'
+      - 'tools/**'
+      - 'scripts/**'
+      - 'oracle/**'
+      - 'PYFA_REF'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.gitignore'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - 'test/**'
+      - 'tools/**'
+      - 'scripts/**'
+      - 'oracle/**'
+      - 'PYFA_REF'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.gitignore'
   workflow_dispatch:
     inputs:
       version:
-        description: 'eve-fit-engine version to release (X.Y.Z; empty = latest on npm)'
+        description: 'X.Y.Z to release exactly (data/ from that eve-fit-engine tarball); empty = automatic rule'
         required: false
 
 permissions:
-  contents: write
-
-concurrency:
-  group: release
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  release:
+  # PRs never tag: only print the version a merge would release.
+  preview:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Version a merge would release
+        run: |
+          V=$(bash scripts/next-version.sh)
+          echo "Merging this PR would release v$V (unless eve-fit-engine publishes a higher version first)." | tee -a "$GITHUB_STEP_SUMMARY"
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
     steps:
       - name: Create GitHub App token
         id: app-token
@@ -35,40 +87,92 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: capsuleers.fitting-engine-go
 
+      # Always the CURRENT tip of main (not the pushed sha): a queued run releases everything merged.
       - uses: actions/checkout@v7
         with:
+          ref: main
           token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide (push only; a manual run always goes on)
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          skip=false
+          if [ "$EVENT" = push ]; then
+            if git log -1 --format=%s | grep -qF '[auto]'; then
+              skip=true; echo "Tip is an [auto] commit: it already includes every earlier change."
+            elif git tag --points-at HEAD | grep -q '^v'; then
+              skip=true; echo "Tip is already tagged: nothing to release."
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-go@v7
+        if: steps.decide.outputs.skip != 'true'
         with:
           go-version-file: go.mod
 
-      - name: Resolve the version
+      - name: Resolve the version and the data source
         id: ver
+        if: steps.decide.outputs.skip != 'true'
         env:
           INPUT: ${{ inputs.version }}
         run: |
           V="${INPUT#v}"
-          [ -n "$V" ] || V=$(go run ./tools/syncdata -latest)
-          if ! printf '%s' "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "::error::bad version '$V'"; exit 1; fi
-          if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then echo "::error::tag v$V already exists"; exit 1; fi
+          if [ -n "$V" ]; then
+            D="$V"                                    # manual: data/ of exactly that version
+          else
+            V=$(bash scripts/next-version.sh)
+            D=$(go run ./tools/syncdata -latest)      # automatic: data/ of the latest npm version
+          fi
+          for x in "$V" "$D"; do
+            printf '%s' "$x" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::bad version '$x'"; exit 1; }
+          done
+          if [ -n "$(git ls-remote --tags origin "refs/tags/v$V")" ] || git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "::error::tag v$V already exists"; exit 1
+          fi
           echo "v=$V" >> "$GITHUB_OUTPUT"
+          echo "data=$D" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$V with data/ of eve-fit-engine@$D"
 
       - name: Sync data/ + VERSION
+        if: steps.decide.outputs.skip != 'true'
+        env:
+          V: ${{ steps.ver.outputs.v }}
+          D: ${{ steps.ver.outputs.data }}
         run: |
-          go run ./tools/syncdata -version "${{ steps.ver.outputs.v }}"
-          echo "${{ steps.ver.outputs.v }}" > VERSION
+          go run ./tools/syncdata -version "$D"
+          echo "$V" > VERSION
 
       - name: Release gate
+        if: steps.decide.outputs.skip != 'true'
         run: bash scripts/gate.sh
 
       - name: Commit, tag & push
+        if: steps.decide.outputs.skip != 'true'
+        env:
+          INPUT: ${{ inputs.version }}
+          V: ${{ steps.ver.outputs.v }}
+          D: ${{ steps.ver.outputs.data }}
         run: |
-          V="${{ steps.ver.outputs.v }}"
           git config user.name  "capsuleers-bot"
           git config user.email "bot@capsuleers.app"
+          # Re-check right before tagging: the twin may have moved, main may have a newer tip, the tag may
+          # exist. An existing tag is NEVER overwritten.
+          if [ -z "$INPUT" ]; then
+            [ "$(bash scripts/next-version.sh)" = "$V" ] || { echo "::error::version moved while the gate ran: re-run"; exit 1; }
+          fi
+          git fetch origin main
+          [ "$(git rev-parse origin/main)" = "$(git rev-parse HEAD)" ] || { echo "::error::main moved while the gate ran: a newer run releases the new tip"; exit 1; }
+          if [ -n "$(git ls-remote --tags origin "refs/tags/v$V")" ] || git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "::error::tag v$V already exists"; exit 1
+          fi
+          if [ "$V" = "$D" ]; then note="= eve-fit-engine $V"; else note="ahead of eve-fit-engine; data/ = eve-fit-engine $D"; fi
           git add data VERSION
-          git diff --cached --quiet || git commit -m "chore(release): v$V (= eve-fit-engine $V)"
-          git tag -a "v$V" -m "v$V (= eve-fit-engine $V)"
-          git push --follow-tags
+          git diff --cached --quiet || git commit -m "chore(release): v$V ($note) [auto]"
+          git tag -a "v$V" -m "v$V ($note)"
+          git push --atomic origin HEAD:main "refs/tags/v$V"
           GOPROXY=https://proxy.golang.org go list -m "github.com/${{ github.repository }}@v$V" || true
