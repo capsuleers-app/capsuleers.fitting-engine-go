@@ -62,9 +62,17 @@ harness.** A fix that resolves an accepted diff deletes its entry in the same co
 
 ## Oracle drift vs engine diffs
 
-pyfa's staticdata trails CCP's. When our `data/` has a type the pinned pyfa doesn't, the oracle fits one
-item FEWER: those fits are reported under `=== ORACLE SDE DRIFT` and skipped (`oracle-skipped`), not
-diffed. The fix is a newer pin, which follows eve-fit-engine (`pyfa-pin-bump.yml`); by hand: CONTRIBUTING.md §7.
+pyfa's staticdata trails CCP's. Two cases make a fit incomparable, and both are reported under
+`=== ORACLE SDE DRIFT` and skipped (`oracle-skipped`), never diffed:
+
+- our `data/` has a type the pinned pyfa doesn't: the oracle would fit one item FEWER (`dropped`);
+- pyfa knows the type but with different BASE attributes (CCP changed it after the pin): every attribute
+  of our bundle's type plus mass/volume/capacity is compared with pyfa's eve.db (oracle op `attrs`),
+  drift if pyfa lacks it or `|ours - pyfa| > 1e-6 * max(1, |pyfa|)`; 1367 maxSubSystems is excluded
+  (pyfa forces it from 5 to 4 on purpose). The report lists type, attribute, our value and pyfa's.
+
+The rule is in `tools/diff/drift.go` (TS: `test/diff/attr-drift.mjs`), identical in both repos. Drift
+makes the run exit non-zero, like unexpected diffs, but under its own heading. The fix is a newer pin, which follows eve-fit-engine (`pyfa-pin-bump.yml`); by hand: CONTRIBUTING.md §7.
 
 ## Pin recalibration
 
