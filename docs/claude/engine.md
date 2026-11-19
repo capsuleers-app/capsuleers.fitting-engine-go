@@ -29,7 +29,9 @@ GPL-3.0-or-later, derivato dichiarato di pyfa `eos` (porting diretto ammesso).
 - `engine/stacking_groups.go`: effectID → penaltyGroup (a mano, doppia col TS); onorati tutti tranne `preMul`.
 - `derived/`: offense, ehp, tank, capacitor (porto di `eos/capSim.py`: cicli interi, torrette a volley,
   cap booster `clipSize=0` = infinito, `moduleReactivationDelay` nel ciclo, costo di attivazione una volta
-  per modulo anche con più effetti di scarica: Dual Afocal Light Laser I, 6633), structure, application.
+  per modulo anche con più effetti di scarica: Dual Afocal Light Laser I, 6633; niente stagger per chi ha
+  l'effetto `turretFitted` 42, armi e anche laser minerari, come `mod.hardpoint == TURRET` di pyfa),
+  structure, application.
 - `engine/constants.go` (`LegacyEffectIDs`, `OutOfScopeEffectIDs`, attributi, categorie), `fit_context.go`,
   `item_state.go`, `modified_attribute.go`, `stacking.go`; `effects/` (weapon, ewar).
 - `jsmath` (semantica JS dove Go differisce), `omap` (Map/Set con ordine di inserimento), `types`.

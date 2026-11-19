@@ -15,10 +15,26 @@ Dettagli harness: `test/diff/README.md`.
 > **INVARIANTE: mai regredire 662/0 per far passare l'harness, mai allargare known-diffs.** Modifiche
 > all'engine: girare entrambe le suite; un fix che risolve un diff accettato ne cancella la voce.
 
-Misura all'estrazione (SDE 3720952, pin b79cd90, 2026-11-19): 4497/4503 fit uguali; 3 fit saltati per
-deriva (98845 Imperial Navy Stasis Webifier assente dal pyfa pinnato) e 3 `fitting.cpuUsed` (Bestla,
-Anhinga, Lachesis `mixed`, −9 CPU): risultato IDENTICO a `npm run diff` del TS sugli stessi dati, quindi
-pin/SDE e non porting. Si risolvono col prossimo pin di eve-fit-engine.
+Misura (SDE 3720952, pin b79cd90 = pyfa master al 2026-11-19), identica a `npm run diff -- --source=all`:
+4497/4503 fit uguali, 0 diff inattesi, 6 fit saltati per deriva SDE (exit 1, come sempre con deriva). Causa radice unica, pin/SDE e non engine: nella SDE 3720952 CCP ha
+rinominato il tipo 97955 in "Compact Imperial Navy Stasis Webifier" portandone la CPU da 25 a 16 e ha
+creato il nuovo 98845 "Imperial Navy Stasis Webifier" (CPU 25). La staticdata del pyfa pinnato ha ancora
+97955 a 25 CPU e non conosce 98845: prima dava 4 `fitting.cpuUsed` a −9 esatti (Vexor Navy Issue,
+Lachesis, Osprey, Scythe Fleet Issue `mixed`), ora dichiarati come deriva di attributi (97955: cpu,
+maxRange, speedFactor), più 2 fit con 98845 assente. pyfa master coincide col pin: si risolve quando pyfa
+aggiorna la staticdata e pyfa-pin-bump segue eve-fit-engine. Non va in known-diffs.
+
+## Deriva SDE (identica nei due repo)
+Un fit è saltato e dichiarato sotto `=== ORACLE SDE DRIFT` (non UNEXPECTED) se usa un tipo che il pyfa
+pinnato: (a) non conosce (`dropped` dell'oracolo), oppure (b) descrive con attributi base diversi
+(`tools/diff/drift.go`, `test/diff/attr-drift.mjs` nel TS; op `attrs` dell'oracolo). Regola (b): per ogni
+tipo dei fit confrontati che pyfa conosce, ogni attributo del NOSTRO bundle (è ciò che l'engine legge)
+più mass/volume/capacity (attributi 4/161/38 di pyfa); deriva se pyfa non lo ha o se
+|nostro − pyfa| > 1e-6·max(1,|pyfa|). Esclusi: attributi che ha solo pyfa (es. cloneGradeRestriction) e
+1367 maxSubSystems, che `db_update.py` di pyfa forza da 5 a 4 di proposito. Misura sull'intero bundle:
+9 tipi su 10 970 in deriva (97955, 4 'Vigilant' Vital, i 4 T3C solo per 1367 → esclusi). Il report
+elenca tipo, attributo, valore nostro e di pyfa. La deriva fa fallire la run (pin vecchio = copertura
+ridotta), con titolo issue distinto da "unexpected differences").
 
 ## Pin pyfa
 `PYFA_REF` = SEMPRE il commit pinnato da eve-fit-engine (`PYFA_REF:` nel suo `diff-parity.yml`).

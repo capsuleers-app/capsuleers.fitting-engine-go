@@ -38,6 +38,7 @@ import (
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/fitengine"
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/fitengine/bundle"
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/fitengine/profiles"
+	"github.com/capsuleers-app/capsuleers.fitting-engine-go/internal/jsmath"
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/internal/types"
 )
 
@@ -302,6 +303,7 @@ type item struct {
 	fitType string
 	ours    *flat
 	ourErr  string
+	types   []int
 }
 
 type drift struct {
@@ -312,14 +314,15 @@ type drift struct {
 }
 
 type summary struct {
-	Total         int        `json:"total"`
-	OkFits        int        `json:"okFits"`
-	OracleFail    int        `json:"oracleFail"`
-	OurFail       int        `json:"ourFail"`
-	OracleSkipped int        `json:"oracleSkipped"`
-	Accepted      []statDiff `json:"accepted"`
-	Drift         []drift    `json:"drift"`
-	CorpusNotes   []string   `json:"corpusNotes"`
+	Total         int              `json:"total"`
+	OkFits        int              `json:"okFits"`
+	OracleFail    int              `json:"oracleFail"`
+	OurFail       int              `json:"ourFail"`
+	OracleSkipped int              `json:"oracleSkipped"`
+	Accepted      []statDiff       `json:"accepted"`
+	Drift         []drift          `json:"drift"`
+	AttrDrift     []attrDriftEntry `json:"attrDrift"`
+	CorpusNotes   []string         `json:"corpusNotes"`
 }
 
 func main() {
@@ -332,7 +335,7 @@ func main() {
 	unexpected, sum := run(a)
 	report(unexpected, sum, a)
 	// Drift fails the run too: a stale pin silently shrinks coverage. Reported SEPARATELY from stat diffs.
-	if len(unexpected) > 0 || len(sum.Drift) > 0 {
+	if len(unexpected) > 0 || len(sum.Drift) > 0 || len(sum.AttrDrift) > 0 {
 		os.Exit(1)
 	}
 }
@@ -495,7 +498,7 @@ func run(a args) ([]statDiff, summary) {
 			continue
 		}
 		id := itoa(e.ship.ID) + ":" + e.spec.FitType
-		it := item{id: id, ship: e.ship, fitType: e.spec.FitType}
+		it := item{id: id, ship: e.ship, fitType: e.spec.FitType, types: specTypes(e.spec)}
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -524,6 +527,27 @@ func run(a args) ([]statDiff, summary) {
 		logf("[diff] wrote %d specs to %s", len(oracleSpecs), a.dump)
 		os.Exit(0)
 	}
+	// The pinned staticdata's view of every type the corpus uses (attribute drift, drift.go).
+	seenType := map[int]bool{}
+	var allTypes []int
+	for _, it := range items {
+		for _, t := range it.types {
+			if !seenType[t] {
+				seenType[t] = true
+				allTypes = append(allTypes, t)
+			}
+		}
+	}
+	pyAttrs := oracleAttrs(allTypes)
+	typeDrift := map[int][]attrDiff{}
+	for _, t := range allTypes {
+		if ty, ok := ds.GetType(t); ok {
+			if d := typeAttrDrift(ds, ty, pyAttrs[t]); len(d) > 0 {
+				typeDrift[t] = d
+			}
+		}
+	}
+
 	logf("[diff] running oracle on %d fits...", len(oracleSpecs))
 	var results []oracleResult
 	callOracle(oracleSpecs, &results)
@@ -535,6 +559,8 @@ func run(a args) ([]statDiff, summary) {
 	var all []statDiff
 	driftBy := map[int]*drift{}
 	var driftOrder []int
+	attrBy := map[int]*attrDriftEntry{}
+	var attrOrder []int
 	sum := summary{Total: len(items), CorpusNotes: notes}
 	for _, it := range items {
 		o := oracle[it.id]
@@ -565,6 +591,28 @@ func run(a args) ([]statDiff, summary) {
 			}
 			continue
 		}
+		// pyfa knows every type, but describes some of them differently from our SDE (CCP changed them
+		// after the pin): the same incomparable-fit case, reported as attribute drift and skipped.
+		drifted := false
+		for _, t := range it.types {
+			d, ok := typeDrift[t]
+			if !ok {
+				continue
+			}
+			drifted = true
+			e := attrBy[t]
+			if e == nil {
+				ty, _ := ds.GetType(t)
+				e = &attrDriftEntry{TypeID: t, Name: ty.Name, Attrs: d}
+				attrBy[t] = e
+				attrOrder = append(attrOrder, t)
+			}
+			e.Fits = append(e.Fits, it.ship.Name+" / "+it.fitType)
+		}
+		if drifted {
+			sum.OracleSkipped++
+			continue
+		}
 		ours := it.ours
 		pyfa := flattenAny(o.Stats, ours)
 		if a.stats != nil {
@@ -576,8 +624,7 @@ func run(a args) ([]statDiff, summary) {
 				}
 				return false
 			}
-			// The TS harness filters only the pyfa side, which makes every ours-only key a diff;
-			// filter both here (this is a debugging option, the corpus is unaffected).
+			// Filter BOTH sides (filtering only pyfa's turned every ours-only key into a diff).
 			ours, pyfa = ours.filter(keep), pyfa.filter(keep)
 		}
 		diffs := diffStats(ours, pyfa, a.tol, a.eps)
@@ -601,6 +648,10 @@ func run(a args) ([]statDiff, summary) {
 		sum.Drift = append(sum.Drift, *driftBy[id])
 	}
 	sort.SliceStable(sum.Drift, func(i, j int) bool { return len(sum.Drift[i].Fits) > len(sum.Drift[j].Fits) })
+	for _, id := range attrOrder {
+		sum.AttrDrift = append(sum.AttrDrift, *attrBy[id])
+	}
+	sort.SliceStable(sum.AttrDrift, func(i, j int) bool { return len(sum.AttrDrift[i].Fits) > len(sum.AttrDrift[j].Fits) })
 	return unexpected, sum
 }
 
@@ -618,10 +669,11 @@ func fmtVal(v any) string {
 	case nil:
 		return "—"
 	case float64:
+		// jsmath.ToFixed, not FormatFloat: the report prints the same digits as the TS harness.
 		if x >= 100 || x <= -100 {
-			return strconv.FormatFloat(x, 'f', 1, 64)
+			return jsmath.ToFixed(x, 1)
 		}
-		return strconv.FormatFloat(x, 'f', 3, 64)
+		return jsmath.ToFixed(x, 3)
 	default:
 		return fmt.Sprint(x)
 	}
@@ -645,9 +697,10 @@ func report(diffs []statDiff, sum summary, a args) {
 	for _, n := range sum.CorpusNotes {
 		fmt.Printf("\nWARNING: %s\n", n)
 	}
-	if len(sum.Drift) > 0 {
-		fmt.Printf("\n=== ORACLE SDE DRIFT (%d type%s absent from the pinned pyfa) ===\n", len(sum.Drift), plural(len(sum.Drift), "", "s"))
-		fmt.Printf("  The pinned oracle cannot fit these, so %d fit(s) were SKIPPED as not comparable.\n", sum.OracleSkipped)
+	if len(sum.Drift) > 0 || len(sum.AttrDrift) > 0 {
+		fmt.Printf("\n=== ORACLE SDE DRIFT (%d type%s absent from the pinned pyfa, %d with different attributes) ===\n",
+			len(sum.Drift), plural(len(sum.Drift), "", "s"), len(sum.AttrDrift))
+		fmt.Printf("  The pinned oracle cannot fit these as our SDE describes them, so %d fit(s) were SKIPPED as not comparable.\n", sum.OracleSkipped)
 		fmt.Println("  Fix: move PYFA_REF to a pyfa whose staticdata carries them (the same pin as eve-fit-engine),")
 		fmt.Println("  re-run `bash scripts/setup-pyfa-oracle.sh`, then `go run ./tools/diff -recalibrate`.")
 		for _, d := range sum.Drift {
@@ -657,6 +710,21 @@ func report(diffs []statDiff, sum summary, a args) {
 				fits, more = fits[:4], ", …"
 			}
 			fmt.Printf("    %-7d %-30s %-10s %d fit%s: %s%s\n", d.TypeID, d.Name, d.Kind, len(d.Fits), plural(len(d.Fits), "", "s"), strings.Join(fits, ", "), more)
+		}
+		if len(sum.AttrDrift) > 0 {
+			fmt.Println("  Attribute drift (type, attribute: ours vs the pinned pyfa):")
+		}
+		for _, d := range sum.AttrDrift {
+			fits := d.Fits
+			more := ""
+			if len(fits) > 4 {
+				fits, more = fits[:4], ", …"
+			}
+			fmt.Printf("    %-7d %-30s %d fit%s: %s%s\n", d.TypeID, d.Name, len(d.Fits), plural(len(d.Fits), "", "s"), strings.Join(fits, ", "), more)
+			for _, x := range d.Attrs {
+				ours := x.Ours
+				fmt.Printf("              %s (%d): ours=%s pyfa=%s\n", x.Name, x.Attr, fmtNum(&ours), fmtNum(x.Pyfa))
+			}
 		}
 	}
 	if len(sum.Accepted) > 0 {
@@ -715,10 +783,10 @@ func report(diffs []statDiff, sum summary, a args) {
 	}
 	fmt.Printf("\nSummary: %d/%d fits match | %d unexpected diff%s across %d stats | %d accepted | our-fail %d | oracle-fail %d | oracle-skipped %d\n",
 		sum.OkFits, sum.Total, len(diffs), plural(len(diffs), "", "s"), len(byStat), len(sum.Accepted), sum.OurFail, sum.OracleFail, sum.OracleSkipped)
-	if len(sum.Drift) > 0 {
+	if len(sum.Drift) > 0 || len(sum.AttrDrift) > 0 {
 		fmt.Printf("WARNING: oracle SDE drift — the pin is stale (see above). Engine parity was NOT assessed on %d fit(s).\n", sum.OracleSkipped)
 	}
-	if len(diffs) == 0 && len(sum.Drift) == 0 {
+	if len(diffs) == 0 && len(sum.Drift) == 0 && len(sum.AttrDrift) == 0 {
 		acc := ""
 		switch {
 		case sum.Total == 0:

@@ -112,8 +112,8 @@ func recalibrate(a args) {
 	}
 	a.strict = true
 	diffs, sum := run(a)
-	if len(sum.Drift) > 0 {
-		logf("[recalibrate] WARNING: %d type(s) absent from the pinned pyfa; %d fit(s) skipped (see `go run ./tools/diff`).", len(sum.Drift), sum.OracleSkipped)
+	if len(sum.Drift) > 0 || len(sum.AttrDrift) > 0 {
+		logf("[recalibrate] WARNING: %d type(s) absent from the pinned pyfa, %d with different attributes; %d fit(s) skipped (see `go run ./tools/diff`).", len(sum.Drift), len(sum.AttrDrift), sum.OracleSkipped)
 	}
 	current := map[string]bool{}
 	var next, added, kept []knownDiff
