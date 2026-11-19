@@ -38,7 +38,7 @@ There is no automatic TS↔Go comparison any more: the only thing that keeps the
 procedure plus both being equal to Pyfa. So:
 
 - A fix that changes a result in one repo and not the other is a bug in the port, not a "Go-only fix".
-- `test/parity/fixtures.json` is shared in content: a fixture added or corrected here goes there too
+- `test/parity/fixtures.json` is byte-identical in both repos: a fixture added or corrected here goes there too
   (and vice versa), with the same expected values.
 - The generated stacking registry must be byte-identical in both repos at the same pin:
   `generated/stacking-penalised.json` here is what `npm run stacking:build` writes there.

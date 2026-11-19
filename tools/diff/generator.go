@@ -38,6 +38,8 @@ const (
 	attrDroneBandwidth     = 1271
 	attrDroneBandwidthUsed = 1272
 	attrFitsToShipType     = 1380
+	attrLauncherHardpoints = 101
+	attrTurretHardpoints   = 102
 )
 
 var slots = []types.SlotType{types.SlotHI, types.SlotMED, types.SlotLO, types.SlotRIG}
@@ -247,16 +249,35 @@ func weaponList(p *pool, kind string) []*types.SdeType {
 	return p.turrets
 }
 
-// The TS generator also filters with `canFitModuleOnShip(ship, t, dataset) && ...`, but with its
-// arguments in the wrong order the call returns an object, which is always truthy: that filter has never
-// excluded anything. It is left out here so both repos keep generating the SAME corpus; fix it in both
-// at once if it is ever fixed.
+// withHardpoints is the hull as CanFitModuleOnShip should see it: hardpoints from the COMPUTED fit, not
+// the bare hull's attributes (a T3C's hardpoints come from its subsystems; the bare Loki has none).
+func withHardpoints(ship *types.SdeType, turretMax, launcherMax float64) *types.SdeType {
+	hull := *ship
+	hull.Attributes = nil
+	for _, a := range ship.Attributes {
+		if a.ID != attrLauncherHardpoints && a.ID != attrTurretHardpoints {
+			hull.Attributes = append(hull.Attributes, a)
+		}
+	}
+	hull.Attributes = append(hull.Attributes, types.SdeTypeAttr{ID: attrLauncherHardpoints, V: launcherMax},
+		types.SdeTypeAttr{ID: attrTurretHardpoints, V: turretMax})
+	return &hull
+}
 
-func fillWeapons(ds *types.FittingDataset, ship *types.SdeType, p *pool, kind string, count, meta int, r func() float64, cpuMax, pgMax float64) []specModule {
+// fitsHull is CanFitModuleOnShip(module, ship, slot): slot effect, canFitShipGroup/Type restrictions,
+// rig size, hardpoints. (Until 2026-11 the TS generator called it with swapped arguments and its result
+// object was always truthy, so the filter never excluded anything; fixed in both repos.)
+func fitsHull(t, hull *types.SdeType, slot types.SlotType) bool {
+	return checks.CanFitModuleOnShip(t, hull, slot, nil).OK
+}
+
+func fillWeapons(ds *types.FittingDataset, ship *types.SdeType, p *pool, kind string, count, meta int, r func() float64, cpuMax, pgMax float64, hull *types.SdeType) []specModule {
 	if count <= 0 {
 		return nil
 	}
-	list := filter(weaponList(p, kind), func(t *types.SdeType) bool { return sizeOk(t, ship, cpuMax, pgMax) })
+	list := filter(weaponList(p, kind), func(t *types.SdeType) bool {
+		return fitsHull(t, hull, types.SlotHI) && sizeOk(t, ship, cpuMax, pgMax)
+	})
 	preferred := filter(list, func(t *types.SdeType) bool { return metaOf(t) == meta })
 	base := list
 	if len(preferred) > 0 {
@@ -274,12 +295,12 @@ func fillWeapons(ds *types.FittingDataset, ship *types.SdeType, p *pool, kind st
 	return out
 }
 
-func fillSlot(ds *types.FittingDataset, ship *types.SdeType, p *pool, slot types.SlotType, count int, metaPicker func(int) int, r func() float64, cpuMax, pgMax float64) []specModule {
+func fillSlot(ds *types.FittingDataset, ship *types.SdeType, p *pool, slot types.SlotType, count int, metaPicker func(int) int, r func() float64, cpuMax, pgMax float64, hull *types.SdeType) []specModule {
 	if count <= 0 {
 		return nil
 	}
 	list := filter(p.bySlot[slot], func(t *types.SdeType) bool {
-		return sizeOk(t, ship, cpuMax, pgMax) && !excludedModuleGroups[t.GroupID]
+		return fitsHull(t, hull, slot) && sizeOk(t, ship, cpuMax, pgMax) && !excludedModuleGroups[t.GroupID]
 	})
 	// Leftover HIGH slots are utility: never fill them with weapons.
 	if slot == types.SlotHI {
@@ -423,15 +444,16 @@ func generateFits(ds *types.FittingDataset, ship *types.SdeType, skills *types.S
 		primaryKind, otherKind = "launcher", "turret"
 	}
 	wpCount := int(math.Max(turretMax, launcherMax))
+	hull := withHardpoints(ship, turretMax, launcherMax)
 
 	assemble := func(fitType string, weapons func(r func() float64) []specModule, metaForSlot func(int) int) fitSpec {
 		r := rng(uint32(ship.ID*31 + len(fitType)*7))
 		w := weapons(r)
 		mods := append([]specModule(nil), w...)
-		mods = append(mods, fillSlot(ds, ship, p, types.SlotHI, int(math.Max(0, hi-float64(len(w)))), metaForSlot, r, cpuMax, pgMax)...)
-		mods = append(mods, fillSlot(ds, ship, p, types.SlotMED, int(med), metaForSlot, r, cpuMax, pgMax)...)
-		mods = append(mods, fillSlot(ds, ship, p, types.SlotLO, int(lo), metaForSlot, r, cpuMax, pgMax)...)
-		mods = append(mods, fillSlot(ds, ship, p, types.SlotRIG, int(rig), metaForSlot, r, cpuMax, pgMax)...)
+		mods = append(mods, fillSlot(ds, ship, p, types.SlotHI, int(math.Max(0, hi-float64(len(w)))), metaForSlot, r, cpuMax, pgMax, hull)...)
+		mods = append(mods, fillSlot(ds, ship, p, types.SlotMED, int(med), metaForSlot, r, cpuMax, pgMax, hull)...)
+		mods = append(mods, fillSlot(ds, ship, p, types.SlotLO, int(lo), metaForSlot, r, cpuMax, pgMax, hull)...)
+		mods = append(mods, fillSlot(ds, ship, p, types.SlotRIG, int(rig), metaForSlot, r, cpuMax, pgMax, hull)...)
 		for i := range mods {
 			mods[i].ID = "m" + itoa(i)
 			mods[i].Position = i
@@ -443,16 +465,16 @@ func generateFits(ds *types.FittingDataset, ship *types.SdeType, skills *types.S
 	mixed := []int{metaT1, metaT2, metaFaction, metaDeadspace, metaOfficer}
 	return []fitSpec{
 		assemble("bonused", func(r func() float64) []specModule {
-			return fillWeapons(ds, ship, p, primaryKind, wpCount, metaT2, r, cpuMax, pgMax)
+			return fillWeapons(ds, ship, p, primaryKind, wpCount, metaT2, r, cpuMax, pgMax, hull)
 		}, const2(metaT2)),
 		assemble("non-bonused", func(r func() float64) []specModule {
-			return fillWeapons(ds, ship, p, otherKind, wpCount, metaT1, r, cpuMax, pgMax)
+			return fillWeapons(ds, ship, p, otherKind, wpCount, metaT1, r, cpuMax, pgMax, hull)
 		}, const2(metaT1)),
 		assemble("t2", func(r func() float64) []specModule {
-			return fillWeapons(ds, ship, p, primaryKind, wpCount, metaT2, r, cpuMax, pgMax)
+			return fillWeapons(ds, ship, p, primaryKind, wpCount, metaT2, r, cpuMax, pgMax, hull)
 		}, const2(metaT2)),
 		assemble("mixed", func(r func() float64) []specModule {
-			return fillWeapons(ds, ship, p, primaryKind, wpCount, metaFaction, r, cpuMax, pgMax)
+			return fillWeapons(ds, ship, p, primaryKind, wpCount, metaFaction, r, cpuMax, pgMax, hull)
 		}, func(i int) int { return mixed[i%5] }),
 	}
 }

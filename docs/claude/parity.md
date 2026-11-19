@@ -15,10 +15,16 @@ Dettagli harness: `test/diff/README.md`.
 > **INVARIANTE: mai regredire 662/0 per far passare l'harness, mai allargare known-diffs.** Modifiche
 > all'engine: girare entrambe le suite; un fix che risolve un diff accettato ne cancella la voce.
 
-Misura all'estrazione (SDE 3720952, pin b79cd90, 2026-11-19): 4497/4503 fit uguali; 3 fit saltati per
-deriva (98845 Imperial Navy Stasis Webifier assente dal pyfa pinnato) e 3 `fitting.cpuUsed` (Bestla,
-Anhinga, Lachesis `mixed`, −9 CPU): risultato IDENTICO a `npm run diff` del TS sugli stessi dati, quindi
-pin/SDE e non porting. Si risolvono col prossimo pin di eve-fit-engine.
+Misura (SDE 3720952, pin b79cd90 = pyfa master al 2026-11-19), identica a `npm run diff -- --source=all`:
+4497/4503 fit uguali, exit 1. Causa radice unica, pin/SDE e non engine: nella SDE 3720952 CCP ha
+rinominato il tipo 97955 in "Compact Imperial Navy Stasis Webifier" portandone la CPU da 25 a 16 e ha
+creato il nuovo 98845 "Imperial Navy Stasis Webifier" (CPU 25). La staticdata del pyfa pinnato ha ancora
+97955 a 25 CPU e non conosce 98845: 4 `fitting.cpuUsed` a −9 esatti (Vexor Navy Issue, Lachesis, Osprey,
+Scythe Fleet Issue `mixed`, tutti con un 97955) e 2 fit saltati per deriva (98845). pyfa master coincide
+col pin, quindi non c'è un pin migliore: si risolve da sé quando pyfa aggiorna la staticdata e
+pyfa-pin-bump segue eve-fit-engine. Non va in known-diffs. Proposta (da fare in entrambi i repo):
+l'oracolo segnali come deriva anche i tipi presenti in entrambi ma con attributi base diversi (oggi
+rileva solo quelli assenti), così un cambio CCP non si traveste da diff dell'engine.
 
 ## Pin pyfa
 `PYFA_REF` = SEMPRE il commit pinnato da eve-fit-engine (`PYFA_REF:` nel suo `diff-parity.yml`).

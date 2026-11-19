@@ -38,6 +38,7 @@ import (
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/fitengine"
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/fitengine/bundle"
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/fitengine/profiles"
+	"github.com/capsuleers-app/capsuleers.fitting-engine-go/internal/jsmath"
 	"github.com/capsuleers-app/capsuleers.fitting-engine-go/internal/types"
 )
 
@@ -576,8 +577,7 @@ func run(a args) ([]statDiff, summary) {
 				}
 				return false
 			}
-			// The TS harness filters only the pyfa side, which makes every ours-only key a diff;
-			// filter both here (this is a debugging option, the corpus is unaffected).
+			// Filter BOTH sides (filtering only pyfa's turned every ours-only key into a diff).
 			ours, pyfa = ours.filter(keep), pyfa.filter(keep)
 		}
 		diffs := diffStats(ours, pyfa, a.tol, a.eps)
@@ -618,10 +618,11 @@ func fmtVal(v any) string {
 	case nil:
 		return "—"
 	case float64:
+		// jsmath.ToFixed, not FormatFloat: the report prints the same digits as the TS harness.
 		if x >= 100 || x <= -100 {
-			return strconv.FormatFloat(x, 'f', 1, 64)
+			return jsmath.ToFixed(x, 1)
 		}
-		return strconv.FormatFloat(x, 'f', 3, 64)
+		return jsmath.ToFixed(x, 3)
 	default:
 		return fmt.Sprint(x)
 	}

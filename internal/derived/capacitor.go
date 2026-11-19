@@ -170,7 +170,22 @@ func drainEntryFromEffect(effect *types.SdeEffect, mod *engine.ItemState) *drain
 		return nil
 	}
 	cycleMs := jsmath.Round(baseCycleMs + mod.GetFinal(attrReactivationMs, 0))
-	return &drainEntry{cycleMs: cycleMs, capNeed: discharge, clipSize: 0, reloadMs: 0, isInjector: false, disableStagger: engine.IsTurretWeapon(mod.Type)}
+	return &drainEntry{cycleMs: cycleMs, capNeed: discharge, clipSize: 0, reloadMs: 0, isInjector: false, disableStagger: hasTurretHardpoint(mod.Type)}
+}
+
+// effectTurretFitted: pyfa's TURRET hardpoint marker (eos Module.__calculateHardpoint).
+const effectTurretFitted = 42
+
+// hasTurretHardpoint: pyfa's `mod.hardpoint == TURRET` (disableStagger), i.e. the `turretFitted` effect,
+// which every turret weapon carries but so do mining lasers and other turret-slot utilities (two Citizen
+// Miners on a Deacon read 42.30 % cap stable against pyfa's 41.88 % while they were staggered).
+func hasTurretHardpoint(t *types.SdeType) bool {
+	for _, e := range t.Effects {
+		if e.ID == effectTurretFitted {
+			return true
+		}
+	}
+	return false
 }
 
 func boosterDrainEntry(mod *engine.ItemState) *drainEntry {

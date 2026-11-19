@@ -25,10 +25,9 @@ tabelle scritte a mano, fixture o harness. Procedura completa per i contributori
 - Corpus `generated` identico (1720/1720 spec), `implants` = sottoinsieme ordinato filtrato dal preflight
   `known` come nel TS. Risultati confrontati con `npm run diff` sui 6 scafi che divergono da pyfa
   (identici); il corpus `workbench` non è stato confrontato spec per spec.
-- Il generatore TS chiama `canFitModuleOnShip` con gli argomenti invertiti (filtro mai attivo): il porto
-  Go lo omette apposta per tenere lo stesso corpus; se lo si corregge, in entrambi.
-- Sul master TS le fixture stanno ancora inline in `test/parity/run-pyfa-parity.ts` (il `fixtures.json`
-  esisteva solo nel ramo `port/go`): tenerle allineate a mano finché il TS non adotta il JSON.
-- Anche `generated/stacking-penalised.json` esiste solo in `port/go`: il master TS genera ancora solo
-  `src/stackingPenalised.ts`. Finché il TS non adotta l'output JSON, il confronto si fa sulle chiavi
-  (stessi effetti e stesse chiavi del `Map` TS).
+- Il generatore chiamava `canFitModuleOnShip` con gli argomenti invertiti (filtro mai attivo): corretto
+  in entrambi a 2026-11 (fix/parity-twin-followups), con gli hardpoint presi dal fit calcolato (T3C);
+  corpus rigenerato, ancora identico spec per spec tra i due repo.
+- Dal ramo fix/parity-twin-followups il TS legge `test/parity/fixtures.json` (identico byte per byte
+  al nostro) e `stacking:build` scrive anche `generated/stacking-penalised.json` (identico al nostro;
+  `--check --from-json` nel suo `ci.yml`).

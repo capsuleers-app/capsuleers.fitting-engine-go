@@ -385,7 +385,7 @@ var LegacyEffectIDs = []LegacyEffectEntry{
 // OUT_OF_SCOPE_EFFECT_IDS (ordinata come nel TS).
 var OutOfScopeEffectIDs = []LegacyEffectEntry{
 	{40, nil, "fitChecks::isMissileLauncher (hardpoint marker)"},
-	{42, nil, "fitChecks::isTurretWeapon (hardpoint marker, also on miners)"},
+	{42, nil, "fitChecks::isTurretWeapon + derived/capacitor no-stagger (hardpoint marker, also on miners)"},
 	{263, nil, "fitChecks::reload-cycle marker (barrage)"},
 	{54, nil, "OUT-OF-SCOPE :: targetPassively (passive lock, no stat impact)"},
 	{55, nil, "OUT-OF-SCOPE :: targetHostiles (target marker)"},
