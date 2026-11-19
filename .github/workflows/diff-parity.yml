@@ -1,0 +1,130 @@
+name: diff-parity
+
+# Differential parity vs a PINNED pyfa-org/Pyfa oracle. Complements ci.yml (deterministic fixture
+# suite, per-push) and pyfa-drift.yml (changed effect ids): this one detects VALUE regressions across
+# three corpora, every stat compared to pyfa —
+#   generated : 4 synthetic fits for every published ship (complete hull cover);
+#   implants  : every implant SET and ship-affecting booster, drawbacks off and on;
+#   workbench : 2-3 REAL fits per hull published on EVE Workbench (needs EVEWORKBENCH_API_KEY; skipped
+#               with a printed note when the corpus is absent, never silently).
+#
+# Scheduled + non-blocking: it needs a pyfa checkout + venv + eve.db build, and pyfa's own SDE can drift
+# from data/, so a red run may mean "pyfa/SDE moved", not "we broke". It opens an issue instead.
+#
+# The pin is ./PYFA_REF and it is the SAME commit eve-fit-engine pins: both engines are compared with the
+# same oracle. test/diff/known-diffs.json is calibrated against that exact pin.
+
+on:
+  schedule:
+    - cron: '30 7 * * 1'   # Mondays 07:30 UTC (after pyfa-drift at 06:30)
+  workflow_dispatch:
+    inputs:
+      pyfa_ref:
+        description: 'Override the pinned pyfa ref (commit/tag/branch)'
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: diff-parity
+  cancel-in-progress: false
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    # Hoisted to the JOB so a step's `if:` can read it (a step's own env is not visible to its condition).
+    env:
+      EVEWORKBENCH_API_KEY: ${{ secrets.EVEWORKBENCH_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v7
+        with: { python-version: '3.13' }
+
+      - name: Resolve the pin
+        id: pin
+        env:
+          OVERRIDE: ${{ github.event.inputs.pyfa_ref }}
+        run: |
+          REF="$OVERRIDE"
+          [ -n "$REF" ] || REF=$(tr -d '[:space:]' < PYFA_REF)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      # Same oracle as eve-fit-engine: a different pin would make the two engines' reports incomparable.
+      - name: Pin matches eve-fit-engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TS=$(gh api repos/${{ github.repository_owner }}/capsuleers.fitting-engine/contents/.github/workflows/diff-parity.yml --jq .content | base64 -d | grep -oP 'PYFA_REF:\s*\K[0-9a-f]{7,40}' || true)
+          if [ -z "$TS" ]; then echo "::warning::could not read the eve-fit-engine pin"; exit 0; fi
+          if [ "$TS" != "$(tr -d '[:space:]' < PYFA_REF)" ]; then
+            echo "::warning::PYFA_REF ($(cat PYFA_REF)) differs from eve-fit-engine's ($TS): run pyfa-pin-bump"
+          fi
+
+      - name: Build pyfa oracle (pinned)
+        env:
+          PYFA_REF: ${{ steps.pin.outputs.ref }}
+        run: bash scripts/setup-pyfa-oracle.sh
+
+      # The stacking registry is GENERATED from the pinned pyfa (+ the raw SDE, for unpublished attribute
+      # ids). If it is stale the engine silently penalises the wrong set: check it before trusting a diff.
+      - name: Stacking registry is in sync with the pinned pyfa
+        run: |
+          go run ./tools/stacking -fetch-sde
+          go run ./tools/stacking -check
+
+      - name: Harvest the EVE Workbench corpus
+        if: env.EVEWORKBENCH_API_KEY != ''
+        run: go run ./tools/workbench
+
+      - name: Differential parity (all corpora)
+        id: diff
+        run: |
+          set +e
+          go run ./tools/diff -source=all > diff-report.txt
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat diff-report.txt
+
+      - name: Open issue on UNEXPECTED diffs
+        if: steps.diff.outputs.code != '0'
+        uses: actions/github-script@v9
+        env:
+          PIN: ${{ steps.pin.outputs.ref }}
+        with:
+          script: |
+            const fs = require('fs')
+            let report = ''
+            try { report = fs.readFileSync('diff-report.txt', 'utf8') } catch {}
+            const marks = ['=== ORACLE SDE DRIFT', '=== UNEXPECTED'].map(m => report.indexOf(m)).filter(i => i >= 0)
+            const start = marks.length ? Math.min(...marks) : -1
+            const body = start >= 0 ? report.slice(start) : report
+            // A stale pin is a one-line fix, an engine diff is an investigation: two titles.
+            const drifted = report.includes('=== ORACLE SDE DRIFT')
+            const diffed = report.includes('=== UNEXPECTED')
+            const pin = process.env.PIN.slice(0, 7)
+            const title = drifted && !diffed
+              ? `diff-parity: pinned pyfa staticdata is stale (${pin})`
+              : `diff-parity: unexpected differences vs pyfa (${pin})`
+            const lede = drifted
+              ? 'The pinned pyfa oracle is missing type(s) our SDE bundle carries, so the affected fits were ' +
+                'SKIPPED as not comparable. This is oracle staleness: the pin follows eve-fit-engine ' +
+                '(pyfa-pin-bump.yml), so check whether that repo has moved its pin.'
+              : 'The differential harness found differences NOT in `test/diff/known-diffs.json`. Either an ' +
+                'engine regression or a pyfa/SDE drift since the pinned ref. Compare with eve-fit-engine\'s ' +
+                'diff-parity run of the same week: the same diff there points to pyfa/SDE or to a shared bug ' +
+                '(fix it in BOTH repos), a diff only here points to this port.'
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: lede + '\n\n' +
+                'Reproduce locally: `bash scripts/setup-pyfa-oracle.sh && go run ./tools/diff -source=all` ' +
+                '(`-strict` re-audits the accepted set).\n\n```\n' + body.slice(0, 5000) + '\n```',
+              labels: ['diff-parity'],
+            })
+            core.setFailed('Unexpected differential-parity diffs (issue opened).')

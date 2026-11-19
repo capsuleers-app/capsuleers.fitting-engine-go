@@ -1,0 +1,21 @@
+# Pyfa headless oracle for the differential harness (tools/diff) and the stacking
+# generator (tools/stacking): pyfa checkout at PYFA_REF + venv + built eve.db,
+# reproduced by scripts/setup-pyfa-oracle.sh. Never committed.
+.pyfa/
+# Python bytecode from the oracle batch driver (oracle/pyfa_oracle.py)
+__pycache__/
+*.pyc
+# Raw SDE tables staged by `go run ./tools/stacking -fetch-sde`: CCP-owned, ephemeral.
+# (The FILTERED bundle under data/ IS committed: it is synced from eve-fit-engine.)
+/.sde-src/
+# Real-fit corpus harvested from EVE Workbench (go run ./tools/workbench):
+# other capsuleers' published fits, read like the site does, not redistributed.
+/.workbench/
+# Harness / test output
+*.log
+/*.jsonl
+*.test
+*.out
+.DS_Store
+.idea/
+.vscode/

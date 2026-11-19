@@ -1,0 +1,58 @@
+name: pyfa-drift
+
+# Watches pyfa-org/Pyfa's eos/effects.py for changes to the set of hardcoded effect handlers. SDE balance
+# changes flow through data/ by themselves; NEW hardcoded mechanics are code and need a human to port
+# them (in BOTH engines) and re-run parity. This job surfaces exactly which effect ids changed.
+
+on:
+  schedule:
+    - cron: '30 6 * * 1'   # Mondays 06:30 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Check Pyfa drift
+        id: drift
+        run: |
+          # Redirect, capture, then print: after `| tee` the status would be tee's and exit-2 drift
+          # would be swallowed.
+          # Built binary, not `go run`: `go run` turns every non-zero exit into 1, and 2 means drift.
+          go build -o "$RUNNER_TEMP/drift" ./tools/drift
+          set +e
+          "$RUNNER_TEMP/drift" > drift-report.txt 2>&1
+          code=$?
+          set -e
+          cat drift-report.txt
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Open issue on drift
+        if: steps.drift.outputs.code == '2'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs')
+            const body = fs.readFileSync('drift-report.txt', 'utf8')
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Pyfa effects.py drift detected (${new Date().toISOString().slice(0,10)})`,
+              body: '```\n' + body.slice(0, 60000) + '\n```\n\n' +
+                    'For each added/changed effect, decide data-driven (no action) vs needs a legacy handler. ' +
+                    '`go test ./internal/engine -run TestEffectCoverage -v` answers it against data/: anything ' +
+                    'that leaves "truly silent (real gaps)" at 0 is covered by the generic dispatcher. A new ' +
+                    'handler goes into BOTH repos (see CONTRIBUTING.md). Then advance the baseline with ' +
+                    '`go run ./tools/drift -update`.',
+              labels: ['pyfa-drift'],
+            })
+      - name: Fail the run if drift
+        if: steps.drift.outputs.code == '2'
+        run: exit 1

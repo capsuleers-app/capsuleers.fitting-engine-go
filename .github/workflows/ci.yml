@@ -1,0 +1,53 @@
+name: ci
+
+# Every push/PR against the committed dataset (data/): vet, the engine analyzer, the generated stacking
+# registry, the full test suite (Pyfa fixture parity 662/0 = the release gate, effect coverage, drone
+# bandwidth, unit tests), and data/ == the eve-fit-engine tarball of the version in VERSION.
+#
+# The per-ship differential harness (tools/diff) is deliberately NOT a per-push gate: it needs a pyfa
+# checkout + Python venv + eve.db build and compares against pyfa's own (possibly drifting) SDE, so it
+# lives in a scheduled, pinned job (diff-parity.yml).
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      # Analyzer, BLOCKING: no `range` over Go maps in the engine packages (internal/omap keeps insertion
+      # order) and explicit float64(a*b) + c where a product enters a sum (no FMA contraction).
+      - run: go run ./tools/lint
+      # The committed JSON renders the committed Go registry (no pyfa needed; diff-parity.yml checks the
+      # JSON itself against the pinned pyfa).
+      - run: go run ./tools/stacking -check -from-json
+      - run: go test ./...
+      # FMA is legal on amd64 v3: the explicit conversions must keep results bit-identical.
+      - run: GOAMD64=v3 go test ./...
+      # The release gate, asserted on its own so a skipped or renamed test can never pass silently.
+      - name: Pyfa fixture parity is 662/0
+        run: |
+          go test ./test/parity -run TestPyfaParity -count=1 -v | tee parity.log
+          grep -q 'Summary: 662 passed, 0 failed.' parity.log
+
+  data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # Versions are aligned: data/ must be byte-identical to data/ of eve-fit-engine@$(cat VERSION).
+      - run: go run ./tools/syncdata -check

@@ -1,0 +1,162 @@
+name: pyfa-pin-bump
+
+# Keep the pyfa oracle pin equal to eve-fit-engine's.
+#
+# Both engines are compared with the SAME pyfa commit. eve-fit-engine's own pyfa-pin-bump moves its pin
+# to pyfa master on Sundays at 12:00 UTC; this job runs two hours later and FOLLOWS that pin (never pyfa
+# master directly: two independent bumps minutes apart could land on different commits).
+#
+# A moved pin regenerates the stacking registry (generated/stacking-penalised.json +
+# internal/gen/stacking_penalised_gen.go) from the new pyfa and recalibrates test/diff/known-diffs.json.
+# known-diffs reasons are HUMAN-OWNED: the bump is auto-committed ONLY when recalibration has nothing to
+# classify; otherwise it opens a PR and fails the run.
+
+on:
+  schedule:
+    - cron: '0 14 * * 0'   # Sundays 14:00 UTC, after eve-fit-engine's bump at 12:00
+  workflow_dispatch:
+    inputs:
+      pyfa_ref:
+        description: 'Target pyfa ref (default: the PYFA_REF of eve-fit-engine)'
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pyfa-pin-bump
+  cancel-in-progress: false
+
+env:
+  FILES: PYFA_REF test/diff/known-diffs.json generated/stacking-penalised.json internal/gen/stacking_penalised_gen.go
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.CAPSULEERS_BOT_APP_ID }}
+          private-key: ${{ secrets.CAPSULEERS_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: capsuleers.fitting-engine-go
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v7
+        with: { python-version: '3.13' }
+
+      - name: Resolve current + target pin
+        id: pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE: ${{ github.event.inputs.pyfa_ref }}
+        run: |
+          CUR=$(tr -d '[:space:]' < PYFA_REF)
+          TARGET="$OVERRIDE"
+          if [ -z "$TARGET" ]; then
+            TARGET=$(gh api repos/${{ github.repository_owner }}/capsuleers.fitting-engine/contents/.github/workflows/diff-parity.yml --jq .content \
+              | base64 -d | grep -oP 'PYFA_REF:\s*\K[0-9a-f]{7,40}' | head -1)
+          fi
+          if [ -z "$CUR" ] || [ -z "$TARGET" ]; then
+            echo "::error::could not resolve pins (current='$CUR' target='$TARGET')"; exit 1
+          fi
+          echo "current=$CUR"        >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET"      >> "$GITHUB_OUTPUT"
+          echo "short=${TARGET:0:7}" >> "$GITHUB_OUTPUT"
+          if [ "$CUR" = "$TARGET" ]; then
+            echo "moved=false" >> "$GITHUB_OUTPUT"; echo "Pin already at $TARGET — nothing to do."
+          else
+            echo "moved=true" >> "$GITHUB_OUTPUT"; echo "Pin ${CUR:0:7} -> ${TARGET:0:7}"
+          fi
+
+      - name: Build oracle at the target pin
+        if: steps.pins.outputs.moved == 'true'
+        env:
+          PYFA_REF: ${{ steps.pins.outputs.target }}
+        run: bash scripts/setup-pyfa-oracle.sh
+
+      # The registry is calibrated against the SAME pyfa commit as the pin: moving only PYFA_REF would
+      # leave every new stack-penalised call running unpenalised.
+      - name: Regenerate the stacking registry from the new pin
+        if: steps.pins.outputs.moved == 'true'
+        run: |
+          go run ./tools/stacking -fetch-sde
+          go run ./tools/stacking
+
+      # The regenerated registry is engine code: the full gate must stay green before anything is written.
+      - name: Gate
+        if: steps.pins.outputs.moved == 'true'
+        run: |
+          go vet ./... && go run ./tools/lint && go test ./...
+          go test ./test/parity -run TestPyfaParity -count=1 -v > parity.log
+          grep -q 'Summary: 662 passed, 0 failed.' parity.log
+
+      # Rewrites known-diffs.json + PYFA_REF, exits 1 iff some diff needs a human root cause.
+      - name: Recalibrate registry + pin
+        id: recal
+        if: steps.pins.outputs.moved == 'true'
+        run: |
+          set +e
+          go run ./tools/diff -recalibrate > recal.log 2>&1
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat recal.log
+
+      - name: Commit the bump (nothing to classify)
+        if: steps.pins.outputs.moved == 'true' && steps.recal.outputs.code == '0'
+        run: |
+          if git diff --quiet -- $FILES; then
+            echo "Pin moved upstream but produced no on-disk change — skipping commit."; exit 0
+          fi
+          git config user.name  "capsuleers-bot"
+          git config user.email "bot@capsuleers.app"
+          git add $FILES
+          git commit -m "chore(diff): follow eve-fit-engine pyfa pin to ${{ steps.pins.outputs.short }} [auto]" \
+                     -m "Recalibrated with nothing to classify. See the recal summary in the run log."
+          git push
+
+      # A new stat difference is a judgement call: hand it to a human as a PR, never commit it.
+      - name: Open a PR for entries needing classification
+        if: steps.pins.outputs.moved == 'true' && steps.recal.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if git diff --quiet -- $FILES; then
+            echo "::error::recalibration failed before writing anything — see the log above."; exit 1
+          fi
+          BR="chore/pyfa-pin-${{ steps.pins.outputs.short }}"
+          git config user.name  "capsuleers-bot"
+          git config user.email "bot@capsuleers.app"
+          git checkout -B "$BR"
+          git add $FILES
+          git commit -m "chore(diff): pyfa pin -> ${{ steps.pins.outputs.short }} (entries PENDING REVIEW)"
+          git push -u origin "$BR" --force-with-lease
+          {
+            echo "Automated pyfa pin bump \`${{ steps.pins.outputs.current }}\` → \`${{ steps.pins.outputs.target }}\` (following eve-fit-engine)."
+            echo
+            echo "Recalibration produced entries marked **PENDING REVIEW**, so this was NOT auto-committed."
+            echo "Each one needs a real root cause before merge: a genuine engine bug → **fix the engine in BOTH"
+            echo "repos**; a pyfa float/modelling/per-ship quirk → **replace the reason** with the proven cause."
+            echo "Compare with eve-fit-engine's recalibration of the same pin: the two lists should match."
+            echo
+            echo "Then: \`go test ./test/parity\` (must stay 662/0) and \`go run ./tools/diff -source=all\` (must exit 0)."
+            echo
+            echo '```'
+            tail -c 4000 recal.log
+            echo '```'
+          } > pr-body.md
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$BR" \
+            --title "chore(diff): pyfa pin → ${{ steps.pins.outputs.short }} (needs classification)" \
+            --body-file pr-body.md --label diff-parity
+
+      - name: Fail the run when classification is pending
+        if: steps.pins.outputs.moved == 'true' && steps.recal.outputs.code != '0'
+        run: exit 1

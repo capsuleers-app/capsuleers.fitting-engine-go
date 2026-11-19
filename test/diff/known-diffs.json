@@ -1,0 +1,5 @@
+{
+  "_note": "Accepted differences vs pyfa-org/Pyfa, calibrated against pyfaRef (= PYFA_REF). Auto-managed by `go run ./tools/diff -recalibrate`; reasons are human-owned root causes, never a place to hide bugs. Never regress test/parity (662/0) to satisfy the harness.",
+  "pyfaRef": "b79cd902b0bfa56a43cc5c08b6266fa842f25e85",
+  "entries": []
+}

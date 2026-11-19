@@ -1,0 +1,141 @@
+name: sde-sync
+
+# Follow eve-fit-engine's releases. Versions are aligned (module vX.Y.Z = npm eve-fit-engine X.Y.Z, same
+# data/), and eve-fit-engine refreshes its SDE bundle daily at 05:00 UTC and publishes a patch when CCP
+# ships a new build. Daily, after that, this job compares VERSION with the latest npm version:
+#
+#   - same version                     -> nothing to do;
+#   - newer version, data/ CHANGED     -> sync data/ from the npm tarball, run the release gate; green ->
+#                                         commit data/ + VERSION, tag vX.Y.Z, push, warm the module proxy;
+#                                         red -> one issue (label sde-sync), red run, NO tag;
+#   - newer version, data/ UNCHANGED   -> a code release of eve-fit-engine: its fixes must already be
+#                                         mirrored here (CONTRIBUTING.md), but a robot cannot prove it, so
+#                                         this opens an issue and a human runs release.yml.
+#
+# The data path also ships whatever engine fixes eve-fit-engine merged since its last release: tagging it
+# is only correct because every parity fix lands in both repos together (CONTRIBUTING.md).
+
+on:
+  schedule:
+    - cron: '30 6 * * *'   # daily 06:30 UTC, after eve-fit-engine's sde-refresh (05:00)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.CAPSULEERS_BOT_APP_ID }}
+          private-key: ${{ secrets.CAPSULEERS_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: capsuleers.fitting-engine-go
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Compare with the latest eve-fit-engine
+        id: ver
+        run: |
+          CUR=$(tr -d '[:space:]' < VERSION)
+          LATEST=$(go run ./tools/syncdata -latest)
+          echo "current=$CUR" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$CUR" = "$LATEST" ] || [ "$(printf '%s\n%s\n' "$CUR" "$LATEST" | sort -V | tail -1)" = "$CUR" ]; then
+            echo "newer=false" >> "$GITHUB_OUTPUT"; echo "Up to date ($CUR)."
+          else
+            echo "newer=true" >> "$GITHUB_OUTPUT"; echo "eve-fit-engine $LATEST > $CUR"
+          fi
+
+      - name: Sync data/ from the npm tarball
+        id: chg
+        if: steps.ver.outputs.newer == 'true'
+        run: |
+          go run ./tools/syncdata -version "${{ steps.ver.outputs.latest }}"
+          if [ -z "$(git status --porcelain -- data)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.ver.outputs.latest }}" > VERSION
+          fi
+
+      - name: Release gate
+        id: gate
+        if: steps.chg.outputs.changed == 'true'
+        run: |
+          set +e
+          bash scripts/gate.sh > gate.log 2>&1
+          echo "ok=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat gate.log
+
+      - name: Commit, tag & push (green)
+        if: steps.chg.outputs.changed == 'true' && steps.gate.outputs.ok == '0'
+        run: |
+          V="${{ steps.ver.outputs.latest }}"
+          if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "::error::tag v$V already exists"; exit 1
+          fi
+          git config user.name  "capsuleers-bot"
+          git config user.email "bot@capsuleers.app"
+          git add data VERSION
+          git commit -m "chore(data): sync SDE bundle from eve-fit-engine@$V (build $(cat data/.build)) [auto]"
+          git tag -a "v$V" -m "v$V (= eve-fit-engine $V)"
+          git push --follow-tags
+          GOPROXY=https://proxy.golang.org go list -m "github.com/${{ github.repository }}@v$V" || true
+
+      # ONE open issue per outage (label sde-sync), commented only when the upstream version moves.
+      - name: Report (gate red, or a code release to mirror)
+        if: steps.ver.outputs.newer == 'true' && (steps.chg.outputs.changed == 'false' || steps.gate.outputs.ok != '0')
+        uses: actions/github-script@v9
+        env:
+          LATEST: ${{ steps.ver.outputs.latest }}
+          CURRENT: ${{ steps.ver.outputs.current }}
+          RED: ${{ steps.chg.outputs.changed == 'true' }}
+        with:
+          script: |
+            const fs = require('fs')
+            const v = process.env.LATEST, red = process.env.RED === 'true'
+            const log = fs.existsSync('gate.log') ? fs.readFileSync('gate.log', 'utf8') : ''
+            const tail = log.split('\n').slice(-80).join('\n')
+            const title = red
+              ? `sde-sync blocked: release gate red on eve-fit-engine@${v} data`
+              : `eve-fit-engine ${v} is a code release: mirror it, then run release.yml`
+            const body = red
+              ? `eve-fit-engine@${v} ships a new SDE bundle, but the Go release gate failed: **NOT tagged**, ` +
+                `consumers stay on v${process.env.CURRENT}. Reproduce with \`go run ./tools/syncdata -version ${v} && bash scripts/gate.sh\`. ` +
+                'If eve-fit-engine needed an engine change to accept this SDE (new effect, new handler), port it here.\n\n' +
+                '<details><summary>Gate output (tail)</summary>\n\n```\n' + tail.slice(0, 55000) + '\n```\n\n</details>'
+              : `eve-fit-engine@${v} has the same data/ as v${process.env.CURRENT}: it is a code release. Check that ` +
+                'every engine change it contains is mirrored here (CONTRIBUTING.md, "Fixes in both repos"), then run ' +
+                `the **release** workflow with version \`${v}\`.`
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'sde-sync', per_page: 100,
+            })
+            const existing = open.find((i) => !i.pull_request)
+            if (!existing) {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['sde-sync'] })
+              return
+            }
+            if (existing.title === title) return
+            await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, title })
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body })
+
+      - name: Fail the run if the gate is red
+        if: steps.chg.outputs.changed == 'true' && steps.gate.outputs.ok != '0'
+        run: exit 1

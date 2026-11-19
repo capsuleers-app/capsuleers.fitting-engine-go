@@ -1,0 +1,74 @@
+name: release
+
+# Manual release of the module at an eve-fit-engine version (versions are aligned: tag vX.Y.Z = npm
+# eve-fit-engine X.Y.Z, same data/). Use it for eve-fit-engine CODE releases (data unchanged, so
+# sde-sync.yml only opens an issue) once their fixes are mirrored here, or to re-run a blocked sync.
+#
+# It syncs data/ from the npm tarball of that version, writes VERSION, runs the release gate, commits,
+# tags vX.Y.Z, pushes and warms the module proxy. There is no Go-only version: a Go-only fix waits for
+# (or asks for) the next eve-fit-engine release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'eve-fit-engine version to release (X.Y.Z; empty = latest on npm)'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.CAPSULEERS_BOT_APP_ID }}
+          private-key: ${{ secrets.CAPSULEERS_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: capsuleers.fitting-engine-go
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve the version
+        id: ver
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          V="${INPUT#v}"
+          [ -n "$V" ] || V=$(go run ./tools/syncdata -latest)
+          if ! printf '%s' "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "::error::bad version '$V'"; exit 1; fi
+          if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then echo "::error::tag v$V already exists"; exit 1; fi
+          echo "v=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Sync data/ + VERSION
+        run: |
+          go run ./tools/syncdata -version "${{ steps.ver.outputs.v }}"
+          echo "${{ steps.ver.outputs.v }}" > VERSION
+
+      - name: Release gate
+        run: bash scripts/gate.sh
+
+      - name: Commit, tag & push
+        run: |
+          V="${{ steps.ver.outputs.v }}"
+          git config user.name  "capsuleers-bot"
+          git config user.email "bot@capsuleers.app"
+          git add data VERSION
+          git diff --cached --quiet || git commit -m "chore(release): v$V (= eve-fit-engine $V)"
+          git tag -a "v$V" -m "v$V (= eve-fit-engine $V)"
+          git push --follow-tags
+          GOPROXY=https://proxy.golang.org go list -m "github.com/${{ github.repository }}@v$V" || true

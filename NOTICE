@@ -1,0 +1,45 @@
+capsuleers.fitting-engine-go (github.com/capsuleers-app/capsuleers.fitting-engine-go)
+Copyright (C) 2026 Capsuleers.app
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file for the full text.
+
+-------------------------------------------------------------------------------
+Derivative-work notice
+-------------------------------------------------------------------------------
+This engine is a derivative work of Pyfa (https://github.com/pyfa-org/Pyfa),
+the Python Fitting Assistant, which is licensed under the GNU GPL v3.0. The
+ship-fitting calculation semantics — effect handlers keyed by EVE dogma effect
+IDs, stacking-penalty groups, capacitor simulation, and the late-runtime
+resistance-adaptation pass — mirror Pyfa's `eos` calculation engine. As a
+derivative work, this module is distributed under the same GPL-3.0-or-later
+terms.
+
+It is also a port to Go of eve-fit-engine
+(https://github.com/capsuleers-app/capsuleers.fitting-engine), by the same
+authors and under the same licence.
+
+Pyfa is Copyright (C) its respective authors. See the Pyfa repository for the
+list of contributors.
+
+-------------------------------------------------------------------------------
+EVE Online Static Data Export (SDE)
+-------------------------------------------------------------------------------
+Package `fitengine` contains NO EVE Online game data: it operates on a
+`FittingDataset` that the caller supplies at runtime.
+
+Package `fitengine/bundle` is batteries-included, and the module therefore DOES
+ship a snapshot of the EVE Online Static Data Export under `data/` (~8 MB,
+embedded with go:embed). That snapshot is the same one eve-fit-engine publishes
+for the same version. It is included purely by MERE AGGREGATION with the
+GPL-covered program: it is not part of the program, it is not relicensed by the
+GPL, and it remains governed by its own terms. See `data/SDE-LICENSE.md`.
+
+EVE Online and the EVE logo are the registered trademarks of Fenris Creations.
+All rights are reserved worldwide. All EVE-related materials are the
+intellectual property of Fenris Creations, which does not endorse, and is in no
+way affiliated with, this module. The SDE is redistributed under the EVE
+Online Developer License Agreement, which permits the use of EVE Online data in
+third-party applications.
